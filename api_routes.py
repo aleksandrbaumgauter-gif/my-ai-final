@@ -6,7 +6,6 @@ from main import app, workers, registry, Status, jobs, get_youtube_transcript, g
 from cache_db import cache
 from pywebpush import webpush
 
-# ПРАВИЛЬНЫЙ ФОРМАТ ПРИВАТНОГО КЛЮЧА (с заголовками)
 VAPID_PRIVATE_KEY = """-----BEGIN EC PRIVATE KEY-----
 1d8e1w3z31PIXoSWqWQUQqUn6f1Z8
 -----END EC PRIVATE KEY-----"""
@@ -54,7 +53,6 @@ async def stream(prompt: str = Query(...), cache_prompt: str = Query(None), skip
             yield f"data: {json.dumps({'type': 'token', 'provider': 'КЭШ', 'text': cached}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'provider': 'КЭШ', 'total': 0})}\n\n"
             return
-
         yt = re.search(r'(https?://[^\s]+)', prompt)
         if yt:
             url = yt.group(1); q = prompt.replace(url, "").strip() or "Опиши видео."
@@ -76,12 +74,10 @@ async def stream(prompt: str = Query(...), cache_prompt: str = Query(None), skip
                                 yield f"data: {json.dumps({'type': 'done', 'provider': 'GEMINI (Видео)', 'total': 0.0})}\n\n"
                                 return
                 yield f"data: {json.dumps({'type': 'token', 'provider': 'Система', 'text': '📝 Беру субтитры...'}, ensure_ascii=False)}\n\n"
-            
             tr, err = get_youtube_transcript(url)
             if not err: prompt = f"Вопрос: '{q}'\n\nСубтитры:\n{tr}"
             else:
                 yield f"data: {json.dumps({'type': 'error', 'provider': 'Система', 'error': f'Ошибка: {err}'})}\n\n"; return
-
         queue = asyncio.Queue(); tasks = []
         async with httpx.AsyncClient(timeout=60.0) as client:
             for p in workers:
@@ -121,21 +117,26 @@ async def factory_start(bg: BackgroundTasks, prompt: str = Query(...), count: in
 async def run_factory_job(jid, prompt, count):
     imgs = []
     for i in range(count):
+        if jobs.get(jid).get("status") == "stopped": return
         b = await generate_image_hf(f"{prompt}, scene {i+1}")
         if b: imgs.append(base64.b64encode(b).decode('utf-8')); jobs.update(jid, result=imgs.copy())
         await asyncio.sleep(2)
-    jobs.update(jid, status="done")
     
-    # ОТПРАВЛЯЕМ ПУШ С ВЫВОДОМ ОШИБКИ В ЛОГИ
-    try:
-        if os.path.exists("subs.json"):
-            with open("subs.json", "r") as f: subs = json.load(f)
-            for sub in subs:
-                try:
-                    webpush(sub, data=json.dumps({"title": "🏭 Фабрика готова!", "body": "Картинки сгенерированы."}), vapid_private_key=VAPID_PRIVATE_KEY, vapid_claims={"sub": "mailto:test@test.com"})
-                except Exception as e:
-                    print(f"❌ ОШИБКА ПУША: {e}")
-    except Exception: pass
+    if jobs.get(jid).get("status") != "stopped":
+        jobs.update(jid, status="done")
+        try:
+            if os.path.exists("subs.json"):
+                with open("subs.json", "r") as f: subs = json.load(f)
+                for sub in subs:
+                    try:
+                        webpush(sub, data=json.dumps({"title": "🏭 Фабрика готова!", "body": "Картинки сгенерированы."}), vapid_private_key=VAPID_PRIVATE_KEY, vapid_claims={"sub": "mailto:test@test.com"})
+                    except Exception as e: print(f"❌ ОШИБКА ПУША: {e}")
+        except Exception: pass
+
+@app.post("/factory/stop/{jid}")
+async def factory_stop(jid: str):
+    jobs.update(jid, status="stopped")
+    return {"status": "stopped"}
 
 @app.get("/factory/status/{jid}")
 async def factory_status(jid: str):
