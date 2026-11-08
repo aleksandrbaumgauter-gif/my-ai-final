@@ -14,7 +14,7 @@ HTML = """
         button:hover { opacity: 0.8; }
         .btn-combo { background: #d84315; } .btn-art { background: #6a1b9a; } .btn-factory { background: #000; border: 1px solid #555; }
         .btn-clear { background: #c4302b; } .btn-stats { background: #555; } .btn-summary { background: #e67e22; }
-        .btn-stop { background: #b71c1c; } /* Кнопка Стоп теперь всегда видна */
+        .btn-stop { background: #b71c1c; }
         .grid { display: grid; grid-template-columns: 1fr; gap: 15px; }
         @media(min-width: 768px) { .grid { grid-template-columns: 1fr 1fr; } }
         .card { background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 15px; }
