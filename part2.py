@@ -136,7 +136,7 @@ HTML = """
 
     <script>
         let currentEventSource = null;
-        const HISTORY_LIMIT = 3; // <--- ИЗМЕНЕНО: Храним только 3 записи
+        const HISTORY_LIMIT = 3;
 
         if ("Notification" in window) { Notification.requestPermission(); }
 
@@ -146,7 +146,6 @@ HTML = """
             }
         }
 
-        // --- СЖАТИЕ ФОТО НА КЛИЕНТЕ ---
         function compressImage(file, maxWidth = 800) {
             return new Promise((resolve) => {
                 const reader = new FileReader();
@@ -167,10 +166,8 @@ HTML = """
             });
         }
 
-        // --- ПАМЯТЬ И ИСТОРИЯ ---
         function updateMemoryBar() {
             let history = JSON.parse(localStorage.getItem('chat_history') || "[]");
-            // 3 записи = 100% памяти
             let percent = Math.min(100, (history.length / HISTORY_LIMIT) * 100); 
             const bar = document.getElementById("mem-bar");
             const text = document.getElementById("mem-text");
@@ -192,9 +189,7 @@ HTML = """
         function saveToHistory(type, content) {
             let history = JSON.parse(localStorage.getItem('chat_history') || "[]");
             history.push({ type: type, content: content });
-            // Ограничиваем историю 3 последними записями
             if (history.length > HISTORY_LIMIT) history = history.slice(-HISTORY_LIMIT);
-            
             try {
                 localStorage.setItem('chat_history', JSON.stringify(history));
             } catch (e) {
@@ -231,7 +226,6 @@ HTML = """
             loadHistory(); 
         };
 
-        // --- ОСНОВНЫЕ ФУНКЦИИ ---
         async function startStream() {
             const inputVal = document.getElementById('prompt').value;
             const fileInput = document.getElementById('fileInput');
@@ -245,9 +239,7 @@ HTML = """
                 statusBar.innerText = "📸 Анализируем фото...";
                 statusBar.style.color = "#ff9800";
                 const file = fileInput.files[0];
-                
                 const base64Image = await compressImage(file);
-                
                 const res = await fetch('/analyze_image', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
@@ -273,15 +265,12 @@ HTML = """
             currentEventSource.onmessage = function(e) {
                 const data = JSON.parse(e.data);
                 const p = data.provider;
-                
                 if (data.type === "token" && data.text.includes("Скачиваем")) {
                     statusBar.innerText = data.text;
                     statusBar.style.color = "#ff9800";
                     return;
                 }
-                
                 statusBar.innerText = `⏳ Ждем ответ от ${p}...`;
-
                 if (!cards[p]) {
                     const div = document.createElement("div");
                     div.className = "card";
@@ -311,7 +300,6 @@ HTML = """
             statusBar.innerText = "🎨 Отправляем запрос в FLUX...";
             statusBar.style.color = "#ff9800";
             box.innerHTML = '<p>⏳ Рисуем...</p>';
-            
             fetch(`/image?prompt=${encodeURIComponent(prompt)}`)
                 .then(res => res.blob())
                 .then(blob => {
@@ -333,34 +321,43 @@ HTML = """
             const box = document.getElementById("image-box");
             const statusBar = document.getElementById("status-bar");
             box.innerHTML = '';
-            statusBar.innerText = "🏭 Запускаем фабрику...";
+            statusBar.innerText = "🏭 Запускаем фабрику (в фоне)...";
             statusBar.style.color = "#ff9800";
 
-            const es = new EventSource(`/factory?prompt=${encodeURIComponent(prompt)}&count=${count}`);
-            es.onmessage = function(e) {
-                const d = JSON.parse(e.data);
-                if (d.status) {
-                    statusBar.innerText = d.status;
-                    statusBar.style.color = d.status.includes("Ждем") ? "#f44336" : "#ff9800";
-                }
-                if (d.image) {
-                    const div = document.createElement("div");
-                    div.style.margin = "10px 0";
-                    div.innerHTML = `<p style="color:#aaa;">Кадр ${d.scene}</p><img src="data:image/jpeg;base64,${d.image}" loading="lazy" style="max-width:100%; border-radius:8px;"><br><button class="btn-save" style="margin-top:8px;" onclick="saveToHistory('image', 'data:image/jpeg;base64,${d.image}')">💾 Сохранить кадр</button>`;
-                    box.appendChild(div);
-                }
-                if (d.done) {
-                    statusBar.innerText = "✅ Фабрика завершила работу!";
-                    statusBar.style.color = "#4caf50";
-                    sendNotification("Фабрика закончила работу! Кадры готовы.");
-                    es.close();
-                }
-            };
-            es.onerror = function() {
-                statusBar.innerText = "❌ Фабрика остановилась";
-                statusBar.style.color = "#f44336";
-                es.close();
-            };
+            fetch(`/factory/start?prompt=${encodeURIComponent(prompt)}&count=${count}`, {method: 'POST'})
+                .then(r => r.json())
+                .then(data => {
+                    const jid = data.job_id;
+                    
+                    // ПИНГ СЕРВЕРА КАЖДЫЕ 5 МИНУТ (пока идет генерация)
+                    const pingInterval = setInterval(() => {
+                        fetch('/ping').catch(() => {});
+                    }, 5 * 60 * 1000);
+
+                    // ЦИКЛ ПРОВЕРКИ СТАТУСА
+                    const pollInterval = setInterval(async () => {
+                        const s = await (await fetch(`/factory/status/${jid}`)).json();
+                        
+                        if (s.result && s.result.length > 0) {
+                            box.innerHTML = ""; // очищаем экран
+                            s.result.forEach((img, idx) => {
+                                const div = document.createElement("div");
+                                div.style.margin = "10px 0";
+                                div.innerHTML = `<p style="color:#aaa;">Кадр ${idx+1}</p><img src="data:image/jpeg;base64,${img}" loading="lazy" style="max-width:100%; border-radius:8px;"><br><button class="btn-save" style="margin-top:8px;" onclick="saveToHistory('image', 'data:image/jpeg;base64,${img}')">💾 Сохранить кадр</button>`;
+                                box.appendChild(div);
+                            });
+                            statusBar.innerText = `🏭 Сгенерировано ${s.result.length} из ${count}...`;
+                        }
+
+                        if (s.status === "done") {
+                            clearInterval(pollInterval);
+                            clearInterval(pingInterval);
+                            statusBar.innerText = "✅ Фабрика завершила работу!";
+                            statusBar.style.color = "#4caf50";
+                            sendNotification("Фабрика закончила работу! Кадры готовы.");
+                        }
+                    }, 3000); // Проверяем каждые 3 секунды
+                });
         }
     </script>
 </body>
