@@ -1,66 +1,3 @@
-import os, glob, json, base64, httpx, asyncio, re
-from urllib.parse import urlparse, parse_qs
-from fastapi.responses import HTMLResponse
-from part1 import app, workers, registry
-from youtube_transcript_api import YouTubeTranscriptApi
-import yt_dlp
-
-def get_youtube_transcript(url):
-    try:
-        query = urlparse(url).query
-        video_id = parse_qs(query).get("v")
-        if not video_id:
-            if "youtu.be" in url: video_id = [url.split("/")[-1].split("?")[0]]
-            else: return None, "Неверный формат ссылки"
-        try:
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id[0])
-            data = transcript_list.find_transcript(['ru', 'en']).fetch()
-        except Exception: data = YouTubeTranscriptApi.get_transcript(video_id[0], languages=['ru', 'en'])
-        return " ".join([t['text'] for t in data])[:15000], None
-    except Exception as e: return None, str(e)
-
-def download_video(url, out_path_prefix):
-    try:
-        ydl_opts = {
-            'format': 'worstvideo[height<=144]+worstaudio/worst[ext=mp4]/worst',
-            'outtmpl': out_path_prefix,
-            'quiet': True,
-            'no_warnings': True,
-            'max_filesize': 15 * 1024 * 1024,
-            'socket_timeout': 10,
-            'retries': 2
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl: ydl.download([url])
-        files = glob.glob(f"{out_path_prefix}*"); return files[0] if files else None
-    except Exception: return None
-
-async def analyze_video_with_gemini(url, prompt):
-    gemini_key = os.getenv("GEMINI_KEY", "")
-    if not gemini_key: 
-        yield f"data: {json.dumps({'type': 'error', 'provider': 'Система', 'error': 'Нет ключа Gemini.'})}\n\n"
-        return
-    yield f"data: {json.dumps({'type': 'token', 'provider': 'Система', 'text': '⏳ Скачиваем видео (144p)...'}, ensure_ascii=False)}\n\n"
-    temp_file_prefix = "temp_video"
-    for f in glob.glob(f"{temp_file_prefix}*"): os.remove(f)
-    actual_file = download_video(url, temp_file_prefix)
-    if not actual_file: 
-        yield f"data: {json.dumps({'type': 'error', 'provider': 'Система', 'error': 'Не удалось скачать видео (или >15МБ).'})}\n\n"
-        return
-    yield f"data: {json.dumps({'type': 'token', 'provider': 'Система', 'text': '📤 Отправляем в Gemini...'}, ensure_ascii=False)}\n\n"
-    try:
-        with open(actual_file, "rb") as f: video_data = base64.b64encode(f.read()).decode('utf-8')
-        mime = "video/mp4" if actual_file.endswith(".mp4") else "video/webm"
-        url_api = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(url_api, json={"contents": [{"parts": [{"text": prompt}, {"inline_data": {"mime_type": mime, "data": video_data}}]}]})
-            if resp.status_code == 200:
-                yield f"data: {json.dumps({'type': 'token', 'provider': 'GEMINI (Видео)', 'text': resp.json()['candidates'][0]['content']['parts'][0]['text']}, ensure_ascii=False)}\n\n"
-                yield f"data: {json.dumps({'type': 'done', 'provider': 'GEMINI (Видео)', 'total': 0.0})}\n\n"
-                return
-    except Exception: pass
-    finally:
-        for f in glob.glob(f"{temp_file_prefix}*"): os.remove(f)
-
 HTML = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -72,297 +9,166 @@ HTML = """
         body { font-family: system-ui, sans-serif; background: #121212; color: #eee; padding: 15px; margin: 0; }
         .input-group { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
         @media(min-width: 600px) { .input-group { flex-direction: row; flex-wrap: wrap; } }
-        input[type="text"] { flex-grow: 1; padding: 12px; border-radius: 6px; border: 1px solid #333; background: #222; color: #fff; font-size: 16px; min-width: 200px; }
-        input[type="file"] { color: #aaa; padding: 10px; font-size: 14px; }
-        select { padding: 12px; border-radius: 6px; border: 1px solid #333; background: #222; color: #fff; font-size: 16px; }
-        button { padding: 12px 20px; background: #007acc; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 15px; transition: 0.2s; }
+        input[type="text"] { flex-grow: 1; padding: 12px; border-radius: 6px; border: 1px solid #333; background: #222; color: #fff; font-size: 16px; }
+        button { padding: 12px 20px; background: #007acc; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
         button:hover { opacity: 0.8; }
-        .btn-combo { background: #d84315; }
-        .btn-art { background: #6a1b9a; }
-        .btn-factory { background: #000; border: 1px solid #555; }
-        .btn-haiper { background: #00c853; }
-        .grid { display: grid; grid-template-columns: 1fr; gap: 15px; margin-bottom: 20px; }
+        .btn-combo { background: #d84315; } .btn-art { background: #6a1b9a; } .btn-factory { background: #000; border: 1px solid #555; }
+        .btn-clear { background: #c4302b; } .btn-stats { background: #555; } .btn-summary { background: #e67e22; }
+        .grid { display: grid; grid-template-columns: 1fr; gap: 15px; }
         @media(min-width: 768px) { .grid { grid-template-columns: 1fr 1fr; } }
-        .card { background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 15px; min-height: 100px; position: relative; }
-        .card h3 { margin-top: 0; color: #4caf50; display: flex; justify-content: space-between; align-items: center; font-size: 16px; }
-        .content { white-space: pre-wrap; font-family: monospace; font-size: 14px; line-height: 1.4; }
-        .image-box { text-align: center; margin-top: 20px; }
-        .image-box img { max-width: 100%; border-radius: 8px; border: 1px solid #333; margin-bottom: 10px; }
-        #status-bar { text-align: center; padding: 10px; font-weight: bold; color: #ff9800; font-size: 16px; margin-bottom: 15px; }
-        .mem-bar-container { margin-bottom: 15px; background: #1e1e1e; padding: 10px; border-radius: 8px; display: flex; align-items: center; gap: 10px; }
-        .mem-bar-bg { flex-grow: 1; height: 8px; background: #333; border-radius: 4px; overflow: hidden; }
-        .mem-bar-fill { height: 100%; width: 0%; background: #4caf50; transition: width 0.3s; }
-        .btn-save { font-size: 11px; padding: 4px 8px; background: #4caf50; color: white; border-radius: 4px; margin-left: 10px; }
+        .card { background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 15px; }
+        .card h3 { margin-top: 0; color: #4caf50; font-size: 16px; }
+        .card.cached { border-color: #2196f3; }
+        .content { white-space: pre-wrap; font-family: monospace; font-size: 14px; }
+        #status-bar { text-align: center; padding: 10px; color: #ff9800; margin-bottom: 15px; }
+        .btn-save { font-size: 11px; padding: 4px 8px; background: #4caf50; color: white; border-radius: 4px; margin-left: 10px; cursor: pointer; border: none; }
+        .btn-again { font-size: 11px; padding: 4px 8px; background: #ff9800; color: white; border-radius: 4px; margin-left: 5px; cursor: pointer; border: none; }
+        #summary-box { background: #2c1810; border: 1px solid #e67e22; padding: 10px; border-radius: 6px; margin-bottom: 15px; font-size: 13px; display: none; }
     </style>
 </head>
 <body>
     <h1 style="text-align:center;">🤖 AI Агент</h1>
-    
-    <div class="mem-bar-container">
-        <span id="mem-text" style="font-size:12px; width: 110px;">Память: 0%</span>
-        <div class="mem-bar-bg"><div id="mem-bar" class="mem-bar-fill"></div></div>
-        <button onclick="clearHistory()" style="background:#c4302b; padding:6px 12px; font-size:12px;">🗑️ Очистить</button>
-    </div>
-
     <div id="status-bar">Готов к работе</div>
-
+    <div id="summary-box"><b>🗜️ Резюме:</b> <span id="summary-text"></span></div>
+    
     <div class="input-group">
-        <input type="text" id="prompt" placeholder="Введите задачу..." value="Что на видео? https://youtu.be/dQw4w9WgXcQ">
-        <input type="file" id="fileInput" accept="image/*">
+        <input type="text" id="prompt" placeholder="Введите задачу..." value="Напиши код на Python">
+        <input type="file" id="fileInput" accept="image/*" style="color:#aaa; padding:10px;">
     </div>
-
-    <div class="input-group" style="justify-content: center; background: #1e1e1e; padding: 15px; border-radius: 8px;">
-        <label for="count" style="align-self: center;">Количество кадров:</label>
-        <select id="count">
-            <option value="1">1</option>
-            <option value="2">2</option>
-            <option value="3" selected>3</option>
+    <div class="input-group">
+        <select id="count" style="padding:10px; background:#222; color:#fff; border:1px solid #333; border-radius:6px;">
+            <option value="1">1 кадр</option><option value="2">2 кадра</option><option value="3" selected>3 кадра</option>
         </select>
-        <button class="btn-factory" onclick="startFactory()">🏭 Запустить Фабрику</button>
-    </div>
-
-    <div class="input-group">
+        <button class="btn-factory" onclick="startFactory()">🏭 Фабрика</button>
         <button class="btn-combo" onclick="startStream()">🔥 Всё в одном</button>
         <button class="btn-art" onclick="generateImage()">🎨 Нарисовать</button>
-        <button class="btn-haiper" onclick="window.open('https://haiper.ai', '_blank')">🌐 Оживить на Haiper</button>
     </div>
-
-    <h3 style="text-align:center; color:#888;">Результаты</h3>
+    <div class="input-group">
+        <button class="btn-summary" onclick="summarizeHistory()">🗜️ Сжать историю</button>
+        <button class="btn-clear" onclick="clearCache()">🧹 Очистить кэш</button>
+        <button class="btn-stats" onclick="showCacheStats()">📊 Кэш</button>
+        <button class="btn-clear" onclick="clearChat()">🗑️ Диалог</button>
+    </div>
     <div class="grid" id="grid"></div>
-    <div class="image-box" id="image-box"></div>
-
-    <h3 style="text-align:center; color:#888; margin-top:30px;">Сохраненная история</h3>
-    <div class="grid" id="history-grid"></div>
+    <div id="image-box" style="text-align:center; margin-top:20px;"></div>
 
     <script>
         let currentEventSource = null;
-        const HISTORY_LIMIT = 3;
 
-        if ("Notification" in window) { Notification.requestPermission(); }
+        function compressImage(file) { return new Promise(res => { const r = new FileReader(); r.readAsDataURL(file); r.onload = e => { const i = new Image(); i.src = e.target.result; i.onload = () => { const c = document.createElement('canvas'); c.width = 800; c.height = i.height * (800/i.width); c.getContext('2d').drawImage(i, 0, 0, c.width, c.height); res(c.toDataURL('image/jpeg', 0.7).split(',')[1]); }; }; }); }
+        function saveToHistory(type, content) { let h = JSON.parse(localStorage.getItem('chat_history') || "[]"); h.push({ type, content }); if (h.length > 3) h = h.slice(-3); try { localStorage.setItem('chat_history', JSON.stringify(h)); } catch (e) { alert("Память переполнена!"); return; } }
+        function getChatHistory() { return JSON.parse(localStorage.getItem('chat_dialog') || "[]"); }
+        function saveChatHistory(h) { localStorage.setItem('chat_dialog', JSON.stringify(h)); }
+        function addToChat(role, content) { let h = getChatHistory(); h.push({ role, content }); if (h.length > 12) h = h.slice(-12); saveChatHistory(h); }
 
-        function sendNotification(text) {
-            if ("Notification" in window && Notification.permission === "granted") {
-                new Notification("AI Агент", { body: text });
-            }
+        window.onload = function() { const s = localStorage.getItem('chat_summary'); if (s) { document.getElementById('summary-box').style.display = 'block'; document.getElementById('summary-text').innerText = s; } };
+
+        async function summarizeHistory() {
+            const h = getChatHistory();
+            if (h.length < 4) return alert("Слишком короткая история.");
+            document.getElementById("status-bar").innerText = "🗜️ Сжимаем...";
+            const res = await fetch('/summarize', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ history: h }) });
+            const data = await res.json();
+            if (data.summary) {
+                localStorage.setItem('chat_summary', data.summary);
+                saveChatHistory(h.slice(-2));
+                document.getElementById('summary-box').style.display = 'block';
+                document.getElementById('summary-text').innerText = data.summary;
+                document.getElementById("status-bar").innerText = "✅ Сжато!";
+            } else alert("Ошибка сжатия");
         }
-
-        function compressImage(file, maxWidth = 800) {
-            return new Promise((resolve) => {
-                const reader = new FileReader();
-                reader.readAsDataURL(file);
-                reader.onload = (event) => {
-                    const img = new Image();
-                    img.src = event.target.result;
-                    img.onload = () => {
-                        const canvas = document.createElement('canvas');
-                        const scale = maxWidth / img.width;
-                        canvas.width = maxWidth;
-                        canvas.height = img.height * scale;
-                        const ctx = canvas.getContext('2d');
-                        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-                        resolve(canvas.toDataURL('image/jpeg', 0.7).split(',')[1]);
-                    };
-                };
-            });
-        }
-
-        function updateMemoryBar() {
-            let history = JSON.parse(localStorage.getItem('chat_history') || "[]");
-            let percent = Math.min(100, (history.length / HISTORY_LIMIT) * 100); 
-            const bar = document.getElementById("mem-bar");
-            const text = document.getElementById("mem-text");
-            if (bar && text) {
-                bar.style.width = percent + "%";
-                text.innerText = `Память: ${Math.round(percent)}%`;
-                bar.style.background = percent > 80 ? "#f44336" : "#4caf50";
-            }
-        }
-
-        function clearHistory() {
-            if (confirm("Очистить всю историю? Это освободит память.")) {
-                localStorage.removeItem('chat_history');
-                document.getElementById("history-grid").innerHTML = "";
-                updateMemoryBar();
-            }
-        }
-
-        function saveToHistory(type, content) {
-            let history = JSON.parse(localStorage.getItem('chat_history') || "[]");
-            history.push({ type: type, content: content });
-            if (history.length > HISTORY_LIMIT) history = history.slice(-HISTORY_LIMIT);
-            try {
-                localStorage.setItem('chat_history', JSON.stringify(history));
-            } catch (e) {
-                alert("Память переполнена! Удалите старые картинки из истории.");
-                return;
-            }
-            updateMemoryBar();
-            loadHistory();
-        }
-
-        function loadHistory() {
-            const grid = document.getElementById("history-grid");
-            if (!grid) return;
-            grid.innerHTML = "";
-            let history = JSON.parse(localStorage.getItem('chat_history') || "[]");
-            history.forEach((item, index) => {
-                const div = document.createElement("div");
-                div.className = "card";
-                if (item.type === "text") {
-                    div.innerHTML = `<h3>Текст ${index+1}</h3><div class="content">${item.content}</div>`;
-                } else {
-                    div.innerHTML = `<h3>Картинка ${index+1}</h3><img src="${item.content}" loading="lazy" style="max-width:100%; border-radius:8px;">`;
-                }
-                grid.appendChild(div);
-            });
-        }
-
-        window.onload = function() { 
-            let history = JSON.parse(localStorage.getItem('chat_history') || "[]");
-            if (history.length > HISTORY_LIMIT) {
-                localStorage.setItem('chat_history', JSON.stringify(history.slice(-HISTORY_LIMIT)));
-            }
-            updateMemoryBar(); 
-            loadHistory(); 
-        };
+        function clearChat() { if(!confirm("Очистить диалог?")) return; localStorage.removeItem('chat_dialog'); localStorage.removeItem('chat_summary'); document.getElementById('summary-box').style.display = 'none'; alert("Очищено"); }
+        function clearCache() { if(!confirm("Очистить кэш?")) return; fetch('/cache/clear', { method: 'POST' }).then(r => r.json()).then(d => alert(`Удалено: ${d.deleted}`)); }
+        function showCacheStats() { fetch('/cache/stats').then(r => r.json()).then(d => alert(`Записей: ${d.records}\nРазмер: ${(d.size_bytes/1024).toFixed(1)} КБ`)); }
 
         async function startStream() {
-            const inputVal = document.getElementById('prompt').value;
-            const fileInput = document.getElementById('fileInput');
-            if (!inputVal && !fileInput.files.length) return;
+            const pv = document.getElementById('prompt').value;
+            const fi = document.getElementById('fileInput');
+            const sb = document.getElementById("status-bar");
             if (currentEventSource) currentEventSource.close();
-            document.getElementById("grid").innerHTML = "";
-            document.getElementById("image-box").innerHTML = "";
-            const statusBar = document.getElementById("status-bar");
-
-            if (fileInput.files.length > 0) {
-                statusBar.innerText = "📸 Анализируем фото...";
-                statusBar.style.color = "#ff9800";
-                const file = fileInput.files[0];
-                const base64Image = await compressImage(file);
-                const res = await fetch('/analyze_image', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ prompt: inputVal || "Что на фото?", image: base64Image })
-                });
+            document.getElementById("grid").innerHTML = ""; document.getElementById("image-box").innerHTML = "";
+            
+            if (fi.files.length > 0) {
+                sb.innerText = "📸 Анализируем фото...";
+                const b64 = await compressImage(fi.files[0]);
+                const res = await fetch('/analyze_image', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ prompt: pv || "Что на фото?", image: b64 }) });
                 const data = await res.json();
-                const div = document.createElement("div");
-                div.className = "card";
-                const safeText = data.text.replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\\n/g, ' ');
-                div.innerHTML = `<h3>АНАЛИЗ ФОТО <button class="btn-save" onclick="saveToHistory('text', '${safeText}')">💾 В историю</button></h3><div class="content" style="color:#ff9800">${data.text}</div>`;
-                document.getElementById("grid").appendChild(div);
-                statusBar.innerText = "✅ Фото проанализировано!";
-                statusBar.style.color = "#4caf50";
-                return;
+                const d = document.createElement("div"); d.className = "card";
+                d.innerHTML = `<h3>АНАЛИЗ ФОТО <button class="btn-save" onclick="saveToHistory('text', '${data.text.replace(/'/g, "\\'")}')">💾</button></h3><div class="content">${data.text}</div>`;
+                document.getElementById("grid").appendChild(d); sb.innerText = "✅ Готово!"; return;
             }
-
-            statusBar.innerText = "⏳ Отправляем запрос в нейросети...";
-            statusBar.style.color = "#ff9800";
-            currentEventSource = new EventSource(`/stream?prompt=${encodeURIComponent(inputVal)}`);
+            
+            sb.innerText = "⏳ Отправляем...";
+            const summary = localStorage.getItem('chat_summary');
+            const recent = getChatHistory().slice(-2);
+            let fullPrompt = pv;
+            if (summary || recent.length > 0) {
+                let ctx = ""; 
+                if (summary) ctx += `[Резюме: ${summary}]\n`; 
+                if (recent.length > 0) ctx += `[История: ${recent.map(m => m.role + ": " + m.content).join(" | ")}]\n`;
+                fullPrompt = ctx + "\n" + pv;
+            }
+            
+            currentEventSource = new EventSource(`/stream?prompt=${encodeURIComponent(fullPrompt)}&cache_prompt=${encodeURIComponent(pv)}`);
             const cards = {};
-            let fullText = "";
-
-            currentEventSource.onmessage = function(e) {
-                const data = JSON.parse(e.data);
-                const p = data.provider;
-                if (data.type === "token" && data.text.includes("Скачиваем")) {
-                    statusBar.innerText = data.text;
-                    statusBar.style.color = "#ff9800";
-                    return;
+            let savedToHistory = false;
+            
+            currentEventSource.onmessage = (e) => {
+                const data = JSON.parse(e.data), p = data.provider;
+                const isCached = p === "КЭШ";
+                sb.innerText = isCached ? "🗄️ Из кэша" : `⏳ Ждем ${p}...`;
+                
+                if (!cards[p]) { 
+                    const d = document.createElement("div"); d.className = "card"; if (isCached) d.classList.add('cached');
+                    d.innerHTML = `<h3>${p} <button class="btn-save" onclick="saveToHistory('text', document.getElementById('text-${p}').innerText)">💾</button> <button class="btn-again" onclick="askAgain('${encodeURIComponent(pv)}')">🔄</button></h3><div class="content" id="text-${p}"></div>`; 
+                    document.getElementById("grid").appendChild(d); cards[p] = true; 
                 }
-                statusBar.innerText = `⏳ Ждем ответ от ${p}...`;
-                if (!cards[p]) {
-                    const div = document.createElement("div");
-                    div.className = "card";
-                    div.innerHTML = `<h3>${p} <button class="btn-save" onclick="saveToHistory('text', document.getElementById('text-${p}').innerText)">💾 В историю</button></h3><div class="content" id="text-${p}"></div>`;
-                    document.getElementById("grid").appendChild(div);
-                    cards[p] = true;
-                }
-                if (data.type === "token") {
-                    fullText += data.text;
-                    document.getElementById(`text-${p}`).innerText += data.text;
-                } else if (data.type === "done") {
-                    statusBar.innerText = `✅ ${p} ответил!`;
-                    statusBar.style.color = "#4caf50";
+                
+                if (data.type === "token") { 
+                    document.getElementById(`text-${p}`).innerText += data.text; 
+                } else if (data.type === "done") { 
+                    sb.innerText = `✅ ${p} ответил!`; 
+                    if (!savedToHistory) { 
+                        addToChat("user", pv); 
+                        addToChat("assistant", document.getElementById(`text-${p}`).innerText); 
+                        savedToHistory = true;
+                    }
+                } else if (data.type === "error") { 
+                    document.getElementById(`text-${p}`).innerText += `\n❌ ${data.error}`; 
                 }
             };
-            currentEventSource.onerror = function() {
-                statusBar.innerText = "❌ Соединение прервано";
-                statusBar.style.color = "#f44336";
-                currentEventSource.close();
-            };
+            currentEventSource.onerror = () => { sb.innerText = "❌ Обрыв"; currentEventSource.close(); };
         }
 
+        function askAgain(pvEncoded) { document.getElementById('prompt').value = decodeURIComponent(pvEncoded); startStream(); }
+
         function generateImage() {
-            const prompt = document.getElementById("prompt").value;
-            const box = document.getElementById("image-box");
-            const statusBar = document.getElementById("status-bar");
-            statusBar.innerText = "🎨 Отправляем запрос в FLUX...";
-            statusBar.style.color = "#ff9800";
-            box.innerHTML = '<p>⏳ Рисуем...</p>';
-            fetch(`/image?prompt=${encodeURIComponent(prompt)}`)
-                .then(res => res.blob())
-                .then(blob => {
-                    const url = URL.createObjectURL(blob);
-                    box.innerHTML = `<img src="${url}"><br><button class="btn-save" style="margin-top:10px; font-size:14px; padding:8px 15px;" onclick="saveToHistory('image', '${url}')">💾 Сохранить в историю</button>`;
-                    statusBar.innerText = "✅ Картинка готова!";
-                    statusBar.style.color = "#4caf50";
-                })
-                .catch(() => {
-                    box.innerHTML = '<p style="color:red">❌ Ошибка</p>';
-                    statusBar.innerText = "❌ Ошибка при создании картинки";
-                    statusBar.style.color = "#f44336";
-                });
+            const p = document.getElementById("prompt").value, b = document.getElementById("image-box"), sb = document.getElementById("status-bar");
+            b.innerHTML = '<p>⏳ Рисуем...</p>'; sb.innerText = "🎨 Рисуем...";
+            fetch(`/image?prompt=${encodeURIComponent(p)}`).then(r => r.blob()).then(blob => {
+                const url = URL.createObjectURL(blob);
+                b.innerHTML = `<img src="${url}" style="max-width:100%;border-radius:8px;"><br><button class="btn-save" onclick="saveToHistory('image', '${url}')">💾 Сохранить</button>`;
+                sb.innerText = "✅ Готово!";
+            }).catch(() => { b.innerHTML = '<p style="color:red">❌ Ошибка</p>'; sb.innerText = "❌ Ошибка"; });
         }
 
         function startFactory() {
-            const prompt = document.getElementById("prompt").value;
-            const count = document.getElementById("count").value;
-            const box = document.getElementById("image-box");
-            const statusBar = document.getElementById("status-bar");
-            box.innerHTML = '';
-            statusBar.innerText = "🏭 Запускаем фабрику (в фоне)...";
-            statusBar.style.color = "#ff9800";
-
-            fetch(`/factory/start?prompt=${encodeURIComponent(prompt)}&count=${count}`, {method: 'POST'})
-                .then(r => r.json())
-                .then(data => {
-                    const jid = data.job_id;
-                    
-                    // ПИНГ СЕРВЕРА КАЖДЫЕ 5 МИНУТ (пока идет генерация)
-                    const pingInterval = setInterval(() => {
-                        fetch('/ping').catch(() => {});
-                    }, 5 * 60 * 1000);
-
-                    // ЦИКЛ ПРОВЕРКИ СТАТУСА
-                    const pollInterval = setInterval(async () => {
-                        const s = await (await fetch(`/factory/status/${jid}`)).json();
-                        
-                        if (s.result && s.result.length > 0) {
-                            box.innerHTML = ""; // очищаем экран
-                            s.result.forEach((img, idx) => {
-                                const div = document.createElement("div");
-                                div.style.margin = "10px 0";
-                                div.innerHTML = `<p style="color:#aaa;">Кадр ${idx+1}</p><img src="data:image/jpeg;base64,${img}" loading="lazy" style="max-width:100%; border-radius:8px;"><br><button class="btn-save" style="margin-top:8px;" onclick="saveToHistory('image', 'data:image/jpeg;base64,${img}')">💾 Сохранить кадр</button>`;
-                                box.appendChild(div);
-                            });
-                            statusBar.innerText = `🏭 Сгенерировано ${s.result.length} из ${count}...`;
-                        }
-
-                        if (s.status === "done") {
-                            clearInterval(pollInterval);
-                            clearInterval(pingInterval);
-                            statusBar.innerText = "✅ Фабрика завершила работу!";
-                            statusBar.style.color = "#4caf50";
-                            sendNotification("Фабрика закончила работу! Кадры готовы.");
-                        }
-                    }, 3000); // Проверяем каждые 3 секунды
-                });
+            const p = document.getElementById("prompt").value, c = document.getElementById("count").value, b = document.getElementById("image-box"), sb = document.getElementById("status-bar");
+            b.innerHTML = ''; sb.innerText = "🏭 Запускаем...";
+            fetch(`/factory/start?prompt=${encodeURIComponent(p)}&count=${c}`, { method: 'POST' }).then(r => r.json()).then(data => {
+                const jid = data.job_id;
+                const poll = setInterval(async () => {
+                    const s = await (await fetch(`/factory/status/${jid}`)).json();
+                    if (s.result && s.result.length > 0) {
+                        b.innerHTML = "";
+                        s.result.forEach((img, i) => { const d = document.createElement("div"); d.innerHTML = `<p>Кадр ${i+1}</p><img src="data:image/jpeg;base64,${img}" style="max-width:100%;border-radius:8px;"><br><button class="btn-save" onclick="saveToHistory('image', 'data:image/jpeg;base64,${img}')">💾</button>`; b.appendChild(d); });
+                        sb.innerText = `🏭 Готово ${s.result.length} из ${c}...`;
+                    }
+                    if (s.status === "done") { clearInterval(poll); sb.innerText = "✅ Фабрика завершена!"; }
+                }, 3000);
+            });
         }
     </script>
 </body>
 </html>
 """
-
-@app.get("/")
-async def index(): return HTMLResponse(HTML)
