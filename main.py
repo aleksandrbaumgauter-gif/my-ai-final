@@ -122,3 +122,12 @@ class JobManager:
     def get(self, jid): return self.jobs.get(jid)
 
 jobs = JobManager()
+
+# ================= СКАЧИВАНИЕ ВИДЕО =================
+def download_video(url, prefix):
+    try:
+        opts = {'format': 'best[ext=mp4][filesize<15M]/best[filesize<15M]', 'outtmpl': prefix,
+                'quiet': True, 'no_warnings': True, 'max_filesize': 15*1024*1024, 'socket_timeout': 10, 'retries': 2}
+        with yt_dlp.YoutubeDL(opts) as ydl: ydl.download([url])
+        files = glob.glob(f"{prefix}*"); return files[0] if files else None
+    except Exception: return None
