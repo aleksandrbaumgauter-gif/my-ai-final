@@ -48,6 +48,8 @@ HTML = """
         <button class="btn-clear" onclick="clearCache()">🧹 Очистить кэш</button>
         <button class="btn-stats" onclick="showCacheStats()">📊 Кэш</button>
         <button class="btn-clear" onclick="clearChat()">🗑️ Диалог</button>
+        <button class="btn-art" onclick="saveNote()" style="background:#2196f3;">📌 Запомнить</button>
+        <button class="btn-stats" onclick="showNotes()" style="background:#4caf50;">📋 Мои заметки</button>
     </div>
     <div class="grid" id="grid"></div>
     <div id="image-box" style="text-align:center; margin-top:20px;"></div>
@@ -81,6 +83,26 @@ HTML = """
         function clearChat() { if(!confirm("Очистить диалог?")) return; localStorage.removeItem('chat_dialog'); localStorage.removeItem('chat_summary'); document.getElementById('summary-box').style.display = 'none'; alert("Очищено"); }
         function clearCache() { if(!confirm("Очистить кэш?")) return; fetch('/cache/clear', { method: 'POST' }).then(r => r.json()).then(d => alert(`Удалено: ${d.deleted}`)); }
         function showCacheStats() { fetch('/cache/stats').then(r => r.json()).then(d => alert(`Записей: ${d.records}\nРазмер: ${(d.size_bytes/1024).toFixed(1)} КБ`)); }
+
+        function saveNote() {
+            const pv = document.getElementById('prompt').value;
+            if (!pv) return alert("Введите текст или ссылку для сохранения");
+            let notes = JSON.parse(localStorage.getItem('my_notes') || "[]");
+            notes.push(pv);
+            localStorage.setItem('my_notes', JSON.stringify(notes));
+            alert("✅ Сохранено в память телефона!");
+        }
+        function showNotes() {
+            let notes = JSON.parse(localStorage.getItem('my_notes') || "[]");
+            if (notes.length === 0) return alert("Заметок пока нет.");
+            let text = "Ваши заметки:\n\n";
+            notes.forEach((n, i) => { text += `${i+1}. ${n}\n`; });
+            text += "\nВведите номер заметки, чтобы вставить её в строку:";
+            let choice = prompt(text);
+            if (choice && !isNaN(choice) && notes[choice - 1]) {
+                document.getElementById('prompt').value = notes[choice - 1];
+            }
+        }
 
         async function startStream() {
             const pv = document.getElementById('prompt').value;
@@ -159,7 +181,6 @@ HTML = """
             fetch(`/factory/start?prompt=${encodeURIComponent(p)}&count=${c}`, { method: 'POST' }).then(r => r.json()).then(data => {
                 const jid = data.job_id;
                 
-                // ПИНОК СЕРВЕРА КАЖДЫЕ 5 МИНУТ
                 const pingInterval = setInterval(() => { fetch('/ping').catch(() => {}); }, 5 * 60 * 1000);
 
                 const poll = setInterval(async () => {
@@ -171,10 +192,9 @@ HTML = """
                     }
                     if (s.status === "done") { 
                         clearInterval(poll); 
-                        clearInterval(pingInterval); // Останавливаем пинок, когда готово
+                        clearInterval(pingInterval);
                         sb.innerText = "✅ Фабрика завершена!"; 
                         
-                        // УВЕДОМЛЕНИЕ И ВИБРАЦИЯ
                         if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
                         if ("Notification" in window && Notification.permission === "granted") {
                             new Notification("🏭 AI Агент", { body: "Фабрика завершила работу! Картинки готовы." });
