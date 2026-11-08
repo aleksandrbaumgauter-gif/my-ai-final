@@ -54,6 +54,7 @@ HTML = """
 
     <script>
         let currentEventSource = null;
+        if ("Notification" in window && Notification.permission !== "granted") { Notification.requestPermission(); }
 
         function compressImage(file) { return new Promise(res => { const r = new FileReader(); r.readAsDataURL(file); r.onload = e => { const i = new Image(); i.src = e.target.result; i.onload = () => { const c = document.createElement('canvas'); c.width = 800; c.height = i.height * (800/i.width); c.getContext('2d').drawImage(i, 0, 0, c.width, c.height); res(c.toDataURL('image/jpeg', 0.7).split(',')[1]); }; }; }); }
         function saveToHistory(type, content) { let h = JSON.parse(localStorage.getItem('chat_history') || "[]"); h.push({ type, content }); if (h.length > 3) h = h.slice(-3); try { localStorage.setItem('chat_history', JSON.stringify(h)); } catch (e) { alert("Память переполнена!"); return; } }
@@ -157,6 +158,10 @@ HTML = """
             b.innerHTML = ''; sb.innerText = "🏭 Запускаем...";
             fetch(`/factory/start?prompt=${encodeURIComponent(p)}&count=${c}`, { method: 'POST' }).then(r => r.json()).then(data => {
                 const jid = data.job_id;
+                
+                // ПИНОК СЕРВЕРА КАЖДЫЕ 5 МИНУТ
+                const pingInterval = setInterval(() => { fetch('/ping').catch(() => {}); }, 5 * 60 * 1000);
+
                 const poll = setInterval(async () => {
                     const s = await (await fetch(`/factory/status/${jid}`)).json();
                     if (s.result && s.result.length > 0) {
@@ -164,7 +169,17 @@ HTML = """
                         s.result.forEach((img, i) => { const d = document.createElement("div"); d.innerHTML = `<p>Кадр ${i+1}</p><img src="data:image/jpeg;base64,${img}" style="max-width:100%;border-radius:8px;"><br><button class="btn-save" onclick="saveToHistory('image', 'data:image/jpeg;base64,${img}')">💾</button>`; b.appendChild(d); });
                         sb.innerText = `🏭 Готово ${s.result.length} из ${c}...`;
                     }
-                    if (s.status === "done") { clearInterval(poll); sb.innerText = "✅ Фабрика завершена!"; }
+                    if (s.status === "done") { 
+                        clearInterval(poll); 
+                        clearInterval(pingInterval); // Останавливаем пинок, когда готово
+                        sb.innerText = "✅ Фабрика завершена!"; 
+                        
+                        // УВЕДОМЛЕНИЕ И ВИБРАЦИЯ
+                        if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+                        if ("Notification" in window && Notification.permission === "granted") {
+                            new Notification("🏭 AI Агент", { body: "Фабрика завершила работу! Картинки готовы." });
+                        }
+                    }
                 }, 3000);
             });
         }
