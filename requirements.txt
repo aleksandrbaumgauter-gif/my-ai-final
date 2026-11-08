@@ -1,6 +1,0 @@
-fastapi
-uvicorn
-httpx
-python-dotenv
-youtube-transcript-api
-yt-dlp
