@@ -6,8 +6,10 @@ from main import app, workers, registry, Status, jobs, get_youtube_transcript, g
 from cache_db import cache
 from pywebpush import webpush
 
-# ВСТАВЬТЕ СЮДА ВАШ ПРИВАТНЫЙ КЛЮЧ (он уже вставлен)
-VAPID_PRIVATE_KEY = """1d8e1w3z31PIXoSWqWQUQqUn6f1Z8""" 
+# ПРАВИЛЬНЫЙ ФОРМАТ ПРИВАТНОГО КЛЮЧА (с заголовками)
+VAPID_PRIVATE_KEY = """-----BEGIN EC PRIVATE KEY-----
+1d8e1w3z31PIXoSWqWQUQqUn6f1Z8
+-----END EC PRIVATE KEY-----"""
 
 class SummarizeRequest(BaseModel): history: list
 class ImageRequest(BaseModel): prompt: str; image: str
@@ -124,13 +126,15 @@ async def run_factory_job(jid, prompt, count):
         await asyncio.sleep(2)
     jobs.update(jid, status="done")
     
+    # ОТПРАВЛЯЕМ ПУШ С ВЫВОДОМ ОШИБКИ В ЛОГИ
     try:
         if os.path.exists("subs.json"):
             with open("subs.json", "r") as f: subs = json.load(f)
             for sub in subs:
                 try:
                     webpush(sub, data=json.dumps({"title": "🏭 Фабрика готова!", "body": "Картинки сгенерированы."}), vapid_private_key=VAPID_PRIVATE_KEY, vapid_claims={"sub": "mailto:test@test.com"})
-                except Exception: pass
+                except Exception as e:
+                    print(f"❌ ОШИБКА ПУША: {e}")
     except Exception: pass
 
 @app.get("/factory/status/{jid}")
