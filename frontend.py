@@ -14,6 +14,7 @@ HTML = """
         button:hover { opacity: 0.8; }
         .btn-combo { background: #d84315; } .btn-art { background: #6a1b9a; } .btn-factory { background: #000; border: 1px solid #555; }
         .btn-clear { background: #c4302b; } .btn-stats { background: #555; } .btn-summary { background: #e67e22; }
+        .btn-stop { background: #b71c1c; } /* Кнопка Стоп теперь всегда видна */
         .grid { display: grid; grid-template-columns: 1fr; gap: 15px; }
         @media(min-width: 768px) { .grid { grid-template-columns: 1fr 1fr; } }
         .card { background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 15px; }
@@ -24,10 +25,12 @@ HTML = """
         .btn-save { font-size: 11px; padding: 4px 8px; background: #4caf50; color: white; border-radius: 4px; margin-left: 10px; cursor: pointer; border: none; }
         .btn-again { font-size: 11px; padding: 4px 8px; background: #ff9800; color: white; border-radius: 4px; margin-left: 5px; cursor: pointer; border: none; }
         #summary-box { background: #2c1810; border: 1px solid #e67e22; padding: 10px; border-radius: 6px; margin-bottom: 15px; font-size: 13px; display: none; }
+        #server-status { font-size: 12px; text-align: center; color: #888; margin-bottom: 10px; }
     </style>
 </head>
 <body>
     <h1 style="text-align:center;">🤖 AI Агент</h1>
+    <div id="server-status">Проверка связи с сервером...</div>
     <div id="status-bar">Готов к работе</div>
     <div id="summary-box"><b>🗜️ Резюме:</b> <span id="summary-text"></span></div>
     
@@ -39,7 +42,8 @@ HTML = """
         <select id="count" style="padding:10px; background:#222; color:#fff; border:1px solid #333; border-radius:6px;">
             <option value="1">1 кадр</option><option value="2">2 кадра</option><option value="3" selected>3 кадра</option>
         </select>
-        <button class="btn-factory" onclick="startFactory()">🏭 Фабрика</button>
+        <button class="btn-factory" id="btn-factory" onclick="startFactory()">🏭 Фабрика</button>
+        <button class="btn-stop" id="btn-stop" onclick="stopFactory()">🛑 Стоп</button>
         <button class="btn-combo" onclick="startStream()">🔥 Всё в одном</button>
         <button class="btn-art" onclick="generateImage()">🎨 Нарисовать</button>
     </div>
@@ -56,24 +60,35 @@ HTML = """
 
     <script>
         let currentEventSource = null;
+        let currentFactoryJid = null;
+        let pollInterval = null;
+        let pingInterval = null;
+
+        window.addEventListener('load', async () => {
+            try {
+                const res = await fetch('/ping');
+                if (res.ok) {
+                    document.getElementById('server-status').innerText = "🟢 Сервер онлайн";
+                    document.getElementById('server-status').style.color = "#4caf50";
+                }
+            } catch (e) {
+                document.getElementById('server-status').innerText = "🔴 Сервер спит";
+                document.getElementById('server-status').style.color = "#f44336";
+            }
+            setupPush();
+        });
 
         async function setupPush() {
             if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
-            const reg = await navigator.serviceWorker.register('/sw.js');
-            
-            // Принудительно просим разрешение
-            const permission = await Notification.requestPermission();
-            if (permission !== 'granted') {
-                console.log("Уведомления запрещены пользователем");
-                return;
-            }
-
-            let sub = await reg.pushManager.getSubscription();
-            if (!sub) {
-                const PUBLIC_KEY = "BB9_AyDK3Ib0EQXvHSq66iQkTWMoQ5Ow-Id8e1w3z31PIXoSWqWQUQqUn6f1Z8"; 
-                sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(PUBLIC_KEY) });
-            }
-            await fetch('/subscribe', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(sub) });
+            try {
+                const reg = await navigator.serviceWorker.register('/sw.js');
+                let sub = await reg.pushManager.getSubscription();
+                if (!sub) {
+                    const PUBLIC_KEY = "BB9_AyDK3Ib0EQXvHSq66iQkTWMoQ5Ow-Id8e1w3z31PIXoSWqWQUQqUn6f1Z8";
+                    sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(PUBLIC_KEY) });
+                }
+                await fetch('/subscribe', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(sub) });
+            } catch (e) { console.log("Push setup failed:", e); }
         }
         function urlBase64ToUint8Array(base64String) {
             const padding = '='.repeat((4 - base64String.length % 4) % 4);
@@ -82,9 +97,6 @@ HTML = """
             for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
             return outputArray;
         }
-        window.addEventListener('load', setupPush);
-
-        if ("Notification" in window && Notification.permission !== "granted") { Notification.requestPermission(); }
 
         function compressImage(file) { return new Promise(res => { const r = new FileReader(); r.readAsDataURL(file); r.onload = e => { const i = new Image(); i.src = e.target.result; i.onload = () => { const c = document.createElement('canvas'); c.width = 800; c.height = i.height * (800/i.width); c.getContext('2d').drawImage(i, 0, 0, c.width, c.height); res(c.toDataURL('image/jpeg', 0.7).split(',')[1]); }; }; }); }
         function saveToHistory(type, content) { let h = JSON.parse(localStorage.getItem('chat_history') || "[]"); h.push({ type, content }); if (h.length > 3) h = h.slice(-3); try { localStorage.setItem('chat_history', JSON.stringify(h)); } catch (e) { alert("Память переполнена!"); return; } }
@@ -191,23 +203,35 @@ HTML = """
         function startFactory() {
             const p = document.getElementById("prompt").value, c = document.getElementById("count").value, b = document.getElementById("image-box"), sb = document.getElementById("status-bar");
             b.innerHTML = ''; sb.innerText = "🏭 Запускаем...";
+            
             fetch(`/factory/start?prompt=${encodeURIComponent(p)}&count=${c}`, { method: 'POST' }).then(r => r.json()).then(data => {
-                const jid = data.job_id;
-                const pingInterval = setInterval(() => { fetch('/ping').catch(() => {}); }, 5 * 60 * 1000);
-                const poll = setInterval(async () => {
-                    const s = await (await fetch(`/factory/status/${jid}`)).json();
+                currentFactoryJid = data.job_id;
+                pingInterval = setInterval(() => { fetch('/ping').catch(() => {}); }, 5 * 60 * 1000);
+
+                pollInterval = setInterval(async () => {
+                    const s = await (await fetch(`/factory/status/${currentFactoryJid}`)).json();
                     if (s.result && s.result.length > 0) {
                         b.innerHTML = "";
                         s.result.forEach((img, i) => { const d = document.createElement("div"); d.innerHTML = `<p>Кадр ${i+1}</p><img src="data:image/jpeg;base64,${img}" style="max-width:100%;border-radius:8px;"><br><button class="btn-save" onclick="saveToHistory('image', 'data:image/jpeg;base64,${img}')">💾</button>`; b.appendChild(d); });
                         sb.innerText = `🏭 Готово ${s.result.length} из ${c}...`;
                     }
-                    if (s.status === "done") { 
-                        clearInterval(poll); clearInterval(pingInterval); sb.innerText = "✅ Фабрика завершена!"; 
-                        if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-                        if ("Notification" in window && Notification.permission === "granted") { new Notification("🏭 AI Агент", { body: "Фабрика завершила работу!" }); }
+                    if (s.status === "done" || s.status === "stopped") { 
+                        clearInterval(pollInterval); clearInterval(pingInterval); 
+                        sb.innerText = s.status === "done" ? "✅ Фабрика завершена!" : "🛑 Остановлено";
                     }
                 }, 3000);
             });
+        }
+
+        function stopFactory() {
+            if (!currentFactoryJid) {
+                return alert("Фабрика сейчас не запущена.");
+            }
+            fetch(`/factory/stop/${currentFactoryJid}`, { method: 'POST' });
+            clearInterval(pollInterval);
+            clearInterval(pingInterval);
+            document.getElementById("status-bar").innerText = "🛑 Вы остановили генерацию";
+            currentFactoryJid = null;
         }
     </script>
 </body>
