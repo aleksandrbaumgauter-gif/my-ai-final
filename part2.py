@@ -105,7 +105,7 @@ async def image(prompt: str = Query(...)):
         return Response(content=resp.content, media_type="image/jpeg")
 
 @app.get("/video")
-async def video(prompt: str = Query()):
+async def video(prompt: str = Query(...)):
     video_data = await generate_video_hf(prompt)
     if video_data:
         return Response(content=video_data, media_type="video/mp4")
