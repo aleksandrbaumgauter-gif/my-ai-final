@@ -56,6 +56,26 @@ HTML = """
 
     <script>
         let currentEventSource = null;
+
+        async function setupPush() {
+            if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+            const reg = await navigator.serviceWorker.register('/sw.js');
+            let sub = await reg.pushManager.getSubscription();
+            if (!sub) {
+                const PUBLIC_KEY = "BB9_AyDK3Ib0EQXvHSq66iQkTWMoQ5Ow-Id8e1w3z31PIXoSWqWQUQqUn6f1Z8"; // ВАШ ПУБЛИЧНЫЙ КЛЮЧ
+                sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(PUBLIC_KEY) });
+            }
+            await fetch('/subscribe', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(sub) });
+        }
+        function urlBase64ToUint8Array(base64String) {
+            const padding = '='.repeat((4 - base64String.length % 4) % 4);
+            const base64 = (base64String + padding).replace(/\-/g, '+').replace(/_/g, '/');
+            const rawData = window.atob(base64); const outputArray = new Uint8Array(rawData.length);
+            for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+            return outputArray;
+        }
+        window.addEventListener('load', setupPush);
+
         if ("Notification" in window && Notification.permission !== "granted") { Notification.requestPermission(); }
 
         function compressImage(file) { return new Promise(res => { const r = new FileReader(); r.readAsDataURL(file); r.onload = e => { const i = new Image(); i.src = e.target.result; i.onload = () => { const c = document.createElement('canvas'); c.width = 800; c.height = i.height * (800/i.width); c.getContext('2d').drawImage(i, 0, 0, c.width, c.height); res(c.toDataURL('image/jpeg', 0.7).split(',')[1]); }; }; }); }
@@ -86,22 +106,17 @@ HTML = """
 
         function saveNote() {
             const pv = document.getElementById('prompt').value;
-            if (!pv) return alert("Введите текст или ссылку для сохранения");
+            if (!pv) return alert("Введите текст для сохранения");
             let notes = JSON.parse(localStorage.getItem('my_notes') || "[]");
-            notes.push(pv);
-            localStorage.setItem('my_notes', JSON.stringify(notes));
-            alert("✅ Сохранено в память телефона!");
+            notes.push(pv); localStorage.setItem('my_notes', JSON.stringify(notes));
+            alert("✅ Сохранено!");
         }
         function showNotes() {
             let notes = JSON.parse(localStorage.getItem('my_notes') || "[]");
-            if (notes.length === 0) return alert("Заметок пока нет.");
-            let text = "Ваши заметки:\n\n";
-            notes.forEach((n, i) => { text += `${i+1}. ${n}\n`; });
-            text += "\nВведите номер заметки, чтобы вставить её в строку:";
-            let choice = prompt(text);
-            if (choice && !isNaN(choice) && notes[choice - 1]) {
-                document.getElementById('prompt').value = notes[choice - 1];
-            }
+            if (notes.length === 0) return alert("Заметок нет.");
+            let text = "Заметки:\n\n"; notes.forEach((n, i) => { text += `${i+1}. ${n}\n`; });
+            let choice = prompt(text + "\nВведите номер, чтобы вставить:");
+            if (choice && !isNaN(choice) && notes[choice - 1]) document.getElementById('prompt').value = notes[choice - 1];
         }
 
         async function startStream() {
@@ -126,9 +141,7 @@ HTML = """
             const recent = getChatHistory().slice(-2);
             let fullPrompt = pv;
             if (summary || recent.length > 0) {
-                let ctx = ""; 
-                if (summary) ctx += `[Резюме: ${summary}]\n`; 
-                if (recent.length > 0) ctx += `[История: ${recent.map(m => m.role + ": " + m.content).join(" | ")}]\n`;
+                let ctx = ""; if (summary) ctx += `[Резюме: ${summary}]\n`; if (recent.length > 0) ctx += `[История: ${recent.map(m => m.role + ": " + m.content).join(" | ")}]\n`;
                 fullPrompt = ctx + "\n" + pv;
             }
             
@@ -146,19 +159,11 @@ HTML = """
                     d.innerHTML = `<h3>${p} <button class="btn-save" onclick="saveToHistory('text', document.getElementById('text-${p}').innerText)">💾</button> <button class="btn-again" onclick="askAgain('${encodeURIComponent(pv)}')">🔄</button></h3><div class="content" id="text-${p}"></div>`; 
                     document.getElementById("grid").appendChild(d); cards[p] = true; 
                 }
-                
-                if (data.type === "token") { 
-                    document.getElementById(`text-${p}`).innerText += data.text; 
-                } else if (data.type === "done") { 
+                if (data.type === "token") { document.getElementById(`text-${p}`).innerText += data.text; } 
+                else if (data.type === "done") { 
                     sb.innerText = `✅ ${p} ответил!`; 
-                    if (!savedToHistory) { 
-                        addToChat("user", pv); 
-                        addToChat("assistant", document.getElementById(`text-${p}`).innerText); 
-                        savedToHistory = true;
-                    }
-                } else if (data.type === "error") { 
-                    document.getElementById(`text-${p}`).innerText += `\n❌ ${data.error}`; 
-                }
+                    if (!savedToHistory) { addToChat("user", pv); addToChat("assistant", document.getElementById(`text-${p}`).innerText); savedToHistory = true; }
+                } else if (data.type === "error") { document.getElementById(`text-${p}`).innerText += `\n❌ ${data.error}`; }
             };
             currentEventSource.onerror = () => { sb.innerText = "❌ Обрыв"; currentEventSource.close(); };
         }
@@ -180,9 +185,7 @@ HTML = """
             b.innerHTML = ''; sb.innerText = "🏭 Запускаем...";
             fetch(`/factory/start?prompt=${encodeURIComponent(p)}&count=${c}`, { method: 'POST' }).then(r => r.json()).then(data => {
                 const jid = data.job_id;
-                
                 const pingInterval = setInterval(() => { fetch('/ping').catch(() => {}); }, 5 * 60 * 1000);
-
                 const poll = setInterval(async () => {
                     const s = await (await fetch(`/factory/status/${jid}`)).json();
                     if (s.result && s.result.length > 0) {
@@ -191,14 +194,9 @@ HTML = """
                         sb.innerText = `🏭 Готово ${s.result.length} из ${c}...`;
                     }
                     if (s.status === "done") { 
-                        clearInterval(poll); 
-                        clearInterval(pingInterval);
-                        sb.innerText = "✅ Фабрика завершена!"; 
-                        
+                        clearInterval(poll); clearInterval(pingInterval); sb.innerText = "✅ Фабрика завершена!"; 
                         if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
-                        if ("Notification" in window && Notification.permission === "granted") {
-                            new Notification("🏭 AI Агент", { body: "Фабрика завершила работу! Картинки готовы." });
-                        }
+                        if ("Notification" in window && Notification.permission === "granted") { new Notification("🏭 AI Агент", { body: "Фабрика завершила работу!" }); }
                     }
                 }, 3000);
             });
