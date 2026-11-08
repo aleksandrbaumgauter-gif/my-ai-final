@@ -2,7 +2,7 @@ import os, json, base64, asyncio, httpx, re, glob
 from fastapi import Query, BackgroundTasks
 from fastapi.responses import Response, StreamingResponse, HTMLResponse
 from pydantic import BaseModel
-from main import app, workers, registry, Status, jobs, get_youtube_transcript, generate_image_hf, download_video
+from main import app, workers, registry, Status, jobs, get_youtube_transcript, generate_image_hf
 from cache_db import cache
 
 # ================= СЖАТИЕ =================
@@ -59,6 +59,7 @@ async def stream(prompt: str = Query(...), cache_prompt: str = Query(None), skip
             if any(w in prompt.lower() for w in watch_words):
                 gemini_keys = [k.strip() for k in os.getenv("GEMINI_KEY", "").split(",") if k.strip()]
                 for f in glob.glob("temp_video*"): os.remove(f)
+                from main import download_video
                 actual = download_video(url, "temp_video")
                 if actual:
                     with open(actual, "rb") as f: vdata = base64.b64encode(f.read()).decode('utf-8')
