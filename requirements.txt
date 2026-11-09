@@ -6,3 +6,5 @@ yt-dlp
 youtube-transcript-api
 pydantic
 pywebpush
+ddgs
+beautifulsoup4

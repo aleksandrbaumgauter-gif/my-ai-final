@@ -1,60 +1,6 @@
-HTML = """
-<!DOCTYPE html>
-<html lang="ru">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Agent</title>
-    <style>
-        body { font-family: system-ui, sans-serif; background: #121212; color: #eee; padding: 15px; margin: 0; }
-        .input-group { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; }
-        @media(min-width: 600px) { .input-group { flex-direction: row; flex-wrap: wrap; } }
-        input[type="text"] { flex-grow: 1; padding: 12px; border-radius: 6px; border: 1px solid #333; background: #222; color: #fff; font-size: 16px; }
-        button { padding: 12px 20px; background: #007acc; color: #fff; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
-        button:hover { opacity: 0.8; }
-        .btn-combo { background: #d84315; } .btn-art { background: #6a1b9a; } .btn-factory { background: #000; border: 1px solid #555; }
-        .btn-clear { background: #c4302b; } .btn-stats { background: #555; } .btn-summary { background: #e67e22; }
-        .grid { display: grid; grid-template-columns: 1fr; gap: 15px; }
-        @media(min-width: 768px) { .grid { grid-template-columns: 1fr 1fr; } }
-        .card { background: #1e1e1e; border: 1px solid #333; border-radius: 8px; padding: 15px; }
-        .card h3 { margin-top: 0; color: #4caf50; font-size: 16px; }
-        .card.cached { border-color: #2196f3; }
-        .content { white-space: pre-wrap; font-family: monospace; font-size: 14px; }
-        #status-bar { text-align: center; padding: 10px; color: #ff9800; margin-bottom: 15px; }
-        .btn-save { font-size: 11px; padding: 4px 8px; background: #4caf50; color: white; border-radius: 4px; margin-left: 10px; cursor: pointer; border: none; }
-        .btn-again { font-size: 11px; padding: 4px 8px; background: #ff9800; color: white; border-radius: 4px; margin-left: 5px; cursor: pointer; border: none; }
-        #summary-box { background: #2c1810; border: 1px solid #e67e22; padding: 10px; border-radius: 6px; margin-bottom: 15px; font-size: 13px; display: none; }
-    </style>
-</head>
-<body>
-    <h1 style="text-align:center;">🤖 AI Агент</h1>
-    <div id="status-bar">Готов к работе</div>
-    <div id="summary-box"><b>🗜️ Резюме:</b> <span id="summary-text"></span></div>
-    
-    <div class="input-group">
-        <input type="text" id="prompt" placeholder="Введите задачу..." value="Напиши код на Python">
-        <input type="file" id="fileInput" accept="image/*" style="color:#aaa; padding:10px;">
-    </div>
-    <div class="input-group">
-        <select id="count" style="padding:10px; background:#222; color:#fff; border:1px solid #333; border-radius:6px;">
-            <option value="1">1 кадр</option><option value="2">2 кадра</option><option value="3" selected>3 кадра</option>
-        </select>
-        <button class="btn-factory" onclick="startFactory()">🏭 Фабрика</button>
-        <button class="btn-combo" onclick="startStream()">🔥 Всё в одном</button>
-        <button class="btn-art" onclick="generateImage()">🎨 Нарисовать</button>
-    </div>
-    <div class="input-group">
-        <button class="btn-summary" onclick="summarizeHistory()">🗜️ Сжать историю</button>
-        <button class="btn-clear" onclick="clearCache()">🧹 Очистить кэш</button>
-        <button class="btn-stats" onclick="showCacheStats()">📊 Кэш</button>
-        <button class="btn-clear" onclick="clearChat()">🗑️ Диалог</button>
-        <button class="btn-art" onclick="saveNote()" style="background:#2196f3;">📌 Запомнить</button>
-        <button class="btn-stats" onclick="showNotes()" style="background:#4caf50;">📋 Мои заметки</button>
-    </div>
-    <div class="grid" id="grid"></div>
-    <div id="image-box" style="text-align:center; margin-top:20px;"></div>
+from frontend_html import HTML_HEAD, HTML_FOOT
 
-    <script>
+HTML_JS = """
         let currentEventSource = null;
 
         async function setupPush() {
@@ -62,7 +8,7 @@ HTML = """
             const reg = await navigator.serviceWorker.register('/sw.js');
             let sub = await reg.pushManager.getSubscription();
             if (!sub) {
-                const PUBLIC_KEY = "BB9_AyDK3Ib0EQXvHSq66iQkTWMoQ5Ow-Id8e1w3z31PIXoSWqWQUQqUn6f1Z8";
+                const PUBLIC_KEY = "BBzi3QLw6q9Tv0mMcprrO9BMevowqy1qo9NobPEcKuk7C73qNPg3yfWj-3oBVcueVgy7zCy_6tJJw6ipC9uMHMk";
                 sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(PUBLIC_KEY) });
             }
             await fetch('/subscribe', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(sub) });
@@ -119,26 +65,90 @@ HTML = """
             if (choice && !isNaN(choice) && notes[choice - 1]) document.getElementById('prompt').value = notes[choice - 1];
         }
 
+        async function webSearch(isDeep) {
+            const query = document.getElementById('prompt').value;
+            if (!query) return alert("Введите запрос для поиска");
+            const sb = document.getElementById("status-bar");
+            sb.innerText = isDeep ? "📖 Читаем сайт..." : "🔍 Ищем...";
+            try {
+                const res = await fetch(`/search?query=${encodeURIComponent(query)}&deep=${isDeep}`);
+                const data = await res.json();
+                const d = document.createElement("div"); d.className = "card search-card"; d.style.borderColor = "#4285f4";
+                const h3 = document.createElement("h3"); h3.textContent = isDeep ? "📖 ПОИСК + ЧТЕНИЕ" : "🔍 ПОИСК";
+                const contentDiv = document.createElement("div"); contentDiv.className = "content"; contentDiv.textContent = data.results;
+                d.appendChild(h3); d.appendChild(contentDiv);
+                document.getElementById("grid").prepend(d);
+                sb.innerText = "✅ Готово!";
+            } catch (e) { sb.innerText = "❌ Ошибка поиска"; }
+        }
+
+        async function youtubeSummary() {
+            const url = document.getElementById('prompt').value;
+            if (!url.includes('youtube') && !url.includes('youtu.be')) return alert("Введите ссылку на YouTube");
+            const sb = document.getElementById("status-bar");
+            sb.innerText = "📹 Читаем субтитры...";
+            try {
+                const res = await fetch(`/youtube_summary?url=${encodeURIComponent(url)}`);
+                const data = await res.json();
+                const d = document.createElement("div"); d.className = "card";
+                const h3 = document.createElement("h3"); h3.textContent = "📹 ПЕРЕСКАЗ ВИДЕО";
+                const contentDiv = document.createElement("div"); contentDiv.className = "content"; contentDiv.textContent = data.summary;
+                d.appendChild(h3); d.appendChild(contentDiv);
+                document.getElementById("grid").prepend(d);
+                sb.innerText = "✅ Готово!";
+            } catch (e) { sb.innerText = "❌ Ошибка"; }
+        }
+
+        async function testPush() {
+            const sb = document.getElementById("status-bar");
+            sb.innerText = "🔔 Отправляем тест...";
+            try {
+                const res = await fetch('/push/test', { method: 'POST' });
+                const data = await res.json();
+                if (data.status === 'ok') sb.innerText = `✅ Отправлено на ${data.sent} устройств!`;
+                else sb.innerText = `❌ ${data.message}`;
+            } catch (e) { sb.innerText = "❌ Ошибка отправки"; }
+        }
+
+        function clearSearchCards() {
+            const cards = document.querySelectorAll('.search-card');
+            cards.forEach(c => c.remove());
+            document.getElementById("status-bar").innerText = "Карточки поиска очищены.";
+        }
+
         async function startStream() {
-            const pv = document.getElementById('prompt').value;
+            const pvInput = document.getElementById('prompt').value;
+            let pv = pvInput;
             const fi = document.getElementById('fileInput');
             const sb = document.getElementById("status-bar");
             if (currentEventSource) currentEventSource.close();
             document.getElementById("grid").innerHTML = ""; document.getElementById("image-box").innerHTML = "";
             
+            if (fi.files.length === 0) {
+                const searchKeywords = ["погода", "новости", "сегодня", "курс", "найди", "поищи", "последние", "кто такой", "где находится"];
+                const questionTriggers = ["что такое", "кто такой", "где находится", "когда произошло", "сколько стоит", "как работает"];
+                const needSearch = searchKeywords.some(w => pv.toLowerCase().includes(w)) || questionTriggers.some(w => pv.toLowerCase().startsWith(w));
+                if (needSearch) {
+                    sb.innerText = "🔍 Агент ищет информацию...";
+                    try {
+                        const searchRes = await fetch(`/search?query=${encodeURIComponent(pv)}&deep=false`);
+                        const searchData = await searchRes.json();
+                        pv = `Я нашел в интернете следующую информацию:\n${searchData.results}\n\nИспользуй её, чтобы дать точный ответ на вопрос: ${pv}`;
+                    } catch (e) { console.log("Авто-поиск не удался", e); }
+                }
+            }
+            
             if (fi.files.length > 0) {
                 sb.innerText = "📸 Анализируем фото...";
                 const b64 = await compressImage(fi.files[0]);
-                const res = await fetch('/analyze_image', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ prompt: pv || "Что на фото?", image: b64 }) });
+                const res = await fetch('/analyze_image', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ prompt: pvInput || "Что на фото?", image: b64 }) });
                 const data = await res.json();
-                
                 const d = document.createElement("div"); d.className = "card";
                 const h3 = document.createElement("h3"); h3.textContent = "АНАЛИЗ ФОТО ";
                 const btn = document.createElement("button"); btn.className = "btn-save"; btn.textContent = "💾";
                 btn.onclick = () => saveToHistory('text', data.text);
                 h3.appendChild(btn);
                 const contentDiv = document.createElement("div"); contentDiv.className = "content"; contentDiv.textContent = data.text;
-                
                 d.appendChild(h3); d.appendChild(contentDiv);
                 document.getElementById("grid").appendChild(d); sb.innerText = "✅ Готово!"; return;
             }
@@ -152,7 +162,7 @@ HTML = """
                 fullPrompt = ctx + "\n" + pv;
             }
             
-            currentEventSource = new EventSource(`/stream?prompt=${encodeURIComponent(fullPrompt)}&cache_prompt=${encodeURIComponent(pv)}`);
+            currentEventSource = new EventSource(`/stream?prompt=${encodeURIComponent(fullPrompt)}&cache_prompt=${encodeURIComponent(pvInput)}`);
             const cards = {};
             let savedToHistory = false;
             
@@ -167,7 +177,7 @@ HTML = """
                     const saveBtn = document.createElement("button"); saveBtn.className = "btn-save"; saveBtn.textContent = "💾";
                     saveBtn.onclick = () => saveToHistory('text', document.getElementById(`text-${p}`).textContent);
                     const againBtn = document.createElement("button"); againBtn.className = "btn-again"; againBtn.textContent = "🔄";
-                    againBtn.onclick = () => askAgain(encodeURIComponent(pv));
+                    againBtn.onclick = () => askAgain(encodeURIComponent(pvInput));
                     header.appendChild(saveBtn); header.appendChild(againBtn);
                     const contentDiv = document.createElement("div"); contentDiv.className = "content"; contentDiv.id = `text-${p}`;
                     d.appendChild(header); d.appendChild(contentDiv);
@@ -176,7 +186,7 @@ HTML = """
                 if (data.type === "token") { document.getElementById(`text-${p}`).textContent += data.text; } 
                 else if (data.type === "done") { 
                     sb.innerText = `✅ ${p} ответил!`; 
-                    if (!savedToHistory) { addToChat("user", pv); addToChat("assistant", document.getElementById(`text-${p}`).textContent); savedToHistory = true; }
+                    if (!savedToHistory) { addToChat("user", pvInput); addToChat("assistant", document.getElementById(`text-${p}`).textContent); savedToHistory = true; }
                 } else if (data.type === "error") { document.getElementById(`text-${p}`).textContent += `\n❌ ${data.error}`; }
             };
             currentEventSource.onerror = () => { sb.innerText = "❌ Обрыв"; currentEventSource.close(); };
@@ -226,7 +236,6 @@ HTML = """
                 }, 3000);
             });
         }
-    </script>
-</body>
-</html>
 """
+
+HTML = HTML_HEAD + HTML_JS + HTML_FOOT

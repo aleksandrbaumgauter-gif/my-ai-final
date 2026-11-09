@@ -5,8 +5,10 @@ from pydantic import BaseModel
 from main import app, workers, registry, Status, jobs, get_youtube_transcript, generate_image_hf
 from cache_db import cache
 from pywebpush import webpush
+from search_module import universal_search
 
-VAPID_PRIVATE_KEY = """1d8e1w3z31PIXoSWqWQUQqUn6f1Z8""" 
+# 👇 ВАШ НОВЫЙ ПРИВАТНЫЙ КЛЮЧ ИЗ СКРИНШОТА
+VAPID_PRIVATE_KEY = """HiK9H2kUheipFyOGaR_udAAoUn1Py-ZoSZs6utDLbWs"""
 
 class SummarizeRequest(BaseModel): history: list
 class ImageRequest(BaseModel): prompt: str; image: str
@@ -20,7 +22,8 @@ async def summarize(req: SummarizeRequest):
     for key in groq_keys:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers={"Authorization": f"Bearer {key}"}, json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": prompt}], "max_tokens": 500})
+                # 👇 ИСПРАВЛЕНО: заменили модель на актуальную
+                r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers={"Authorization": f"Bearer {key}"}, json={"model": "gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 500})
                 if r.status_code == 200: return {"summary": r.json()["choices"][0]["message"]["content"]}
         except Exception: pass
     return {"error": "Все ключи Groq заняты"}
@@ -31,10 +34,45 @@ async def analyze_image(req: ImageRequest):
     if key:
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                r = await client.post(f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}", json={"contents": [{"parts": [{"text": req.prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": req.image}}]}]})
+                r = await client.post(f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}", json={"contents": [{"parts": [{"text": req.prompt}, {"inline_data": {"mime_type": "image/jpeg", "data": req.image}}]}]})
                 if r.status_code == 200: return {"text": f"👁️ **Gemini:** {r.json()['candidates'][0]['content']['parts'][0]['text']}"}
         except Exception: pass
     return {"text": "❌ Ошибка анализа фото."}
+
+@app.get("/search")
+async def web_search(query: str = Query(...), deep: bool = Query(False)):
+    res = await universal_search(query, deep_read=deep)
+    return {"results": res}
+
+@app.get("/youtube_summary")
+async def youtube_summary(url: str = Query(...)):
+    tr, err = get_youtube_transcript(url)
+    if err: return {"summary": f"Ошибка: {err}"}
+    prompt = f"Сделай краткий пересказ этого видео (субтитры):\n\n{tr[:10000]}"
+    groq_keys = [k.strip() for k in os.getenv("GROQ_KEY", "").split(",") if k.strip()]
+    for key in groq_keys:
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                # 👇 ИСПРАВЛЕНО: заменили модель на актуальную
+                r = await client.post("https://api.groq.com/openai/v1/chat/completions", headers={"Authorization": f"Bearer {key}"}, json={"model": "gpt-oss-20b", "messages": [{"role": "user", "content": prompt}], "max_tokens": 1000})
+                if r.status_code == 200: return {"summary": r.json()["choices"][0]["message"]["content"]}
+        except Exception: pass
+    return {"summary": "Не удалось получить пересказ (все ключи заняты)."}
+
+@app.post("/push/test")
+async def test_push():
+    if not os.path.exists("subs.json"):
+        return {"status": "error", "message": "Нет подписок"}
+    with open("subs.json", "r") as f: subs = json.load(f)
+    if not subs: return {"status": "error", "message": "Нет подписок"}
+    
+    success = 0
+    for sub in subs:
+        try:
+            webpush(sub, data=json.dumps({"title": "🔔 Тест", "body": "Уведомления работают!"}), vapid_private_key=VAPID_PRIVATE_KEY, vapid_claims={"sub": "mailto:test@test.com"})
+            success += 1
+        except Exception: pass
+    return {"status": "ok", "sent": success}
 
 @app.post("/cache/clear")
 async def cache_clear(): return {"deleted": cache.clear()}
@@ -47,7 +85,6 @@ async def stream(prompt: str = Query(...), cache_prompt: str = Query(None), skip
     async def generator():
         check_prompt = cache_prompt if cache_prompt else prompt
         
-        # ИСПРАВЛЕНО: получаем и текст, и провайдера
         cached_text, cached_provider = cache.get(check_prompt, skip=skip_cache)
         
         if cached_text:
@@ -69,7 +106,7 @@ async def stream(prompt: str = Query(...), cache_prompt: str = Query(None), skip
                     if actual:
                         with open(actual, "rb") as f: vdata = base64.b64encode(f.read()).decode('utf-8')
                         for key in gemini_keys:
-                            api = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={key}"
+                            api = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={key}"
                             async with httpx.AsyncClient(timeout=120.0) as client:
                                 r = await client.post(api, json={"contents": [{"parts": [{"text": q}, {"inline_data": {"mime_type": "video/mp4", "data": vdata}}]}]})
                                 if r.status_code == 200:
@@ -78,7 +115,6 @@ async def stream(prompt: str = Query(...), cache_prompt: str = Query(None), skip
                                     yield f"data: {json.dumps({'type': 'done', 'provider': 'GEMINI (Видео)', 'total': 0.0})}\n\n"
                                     return
                 finally:
-                    # ИСПРАВЛЕНО: гарантированное удаление файла
                     if actual and os.path.exists(actual): os.remove(actual)
                 yield f"data: {json.dumps({'type': 'token', 'provider': 'Система', 'text': '📝 Беру субтитры...'}, ensure_ascii=False)}\n\n"
             
@@ -103,7 +139,6 @@ async def stream(prompt: str = Query(...), cache_prompt: str = Query(None), skip
                     active -= 1
                     if ev["type"] == "error": registry.on_error(ev["provider"])
                     elif ev["type"] == "done": 
-                        # ИСПРАВЛЕНО: сохраняем с указанием провайдера
                         cache.set(check_prompt, full_response_text, provider=ev["provider"])
                 yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
     return StreamingResponse(generator(), media_type="text/event-stream")
